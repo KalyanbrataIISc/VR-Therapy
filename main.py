@@ -39,7 +39,9 @@ def main():
     print("Recognized text:", recognized_text)
 
     # Create a Gemini prompt that instructs it to act as a therapist
-    prompt = f"As a caring therapist, please respond helpfully to the following message: {recognized_text}"
+    prompt = f"""As a caring therapist, please respond helpfully to the following message: {recognized_text}.
+    Please provide a thoughtful and empathetic response. And also to remind you, the text you generate will
+    be used to create an audio file, so please keep it short and concise, and real speechlike."""
 
     # Call Gemini (assuming you have access and the package installed)
     client = genai.Client(api_key=API_KEY)
