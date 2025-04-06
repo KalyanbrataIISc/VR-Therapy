@@ -27,9 +27,8 @@ os.makedirs(THERAPIST_AUDIO_DIR, exist_ok=True)
 p = pyaudio.PyAudio()
 
 class VirtualTherapist:
-    def __init__(self, mode="text"):
-        """Initialize the virtual therapist in text or audio mode."""
-        self.mode = mode
+    def __init__(self):
+        """Initialize the virtual therapist in audio mode only."""
         instruction_text = (
             "You are an empathetic and supportive virtual therapist. "
             "Listen actively, respond with empathy, ask open-ended questions, "
@@ -38,23 +37,15 @@ class VirtualTherapist:
             "If the user says just 'goodbye' or 'end session', just say 'Hope I was able to help you, you can always come back to me for help' and end the session."
         )
         system_instruction = types.Content(parts=[types.Part(text=instruction_text)])
-        if mode == "text":
-            self.config = types.LiveConnectConfig(
-                response_modalities=["text"],
-                system_instruction=system_instruction
-            )
-        elif mode == "audio":
-            self.config = types.LiveConnectConfig(
-                response_modalities=["audio"],
-                system_instruction=system_instruction,
-                speech_config=types.SpeechConfig(
-                    voice_config=types.VoiceConfig(
-                        prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Kore")
-                    )
+        self.config = types.LiveConnectConfig(
+            response_modalities=["audio"],
+            system_instruction=system_instruction,
+            speech_config=types.SpeechConfig(
+                voice_config=types.VoiceConfig(
+                    prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name="Kore")
                 )
             )
-        else:
-            raise ValueError("Mode must be either 'text' or 'audio'")
+        )
         self.recognizer = sr.Recognizer()
     
     async def send_with_retry(self, session, user_input, retries=5):
@@ -69,7 +60,6 @@ class VirtualTherapist:
                     await asyncio.sleep(1)
                 else:
                     raise e
-        # After retries, raise an exception so that the outer loop can reconnect
         raise Exception("Max retries reached for send.")
 
     async def start_session(self):
@@ -77,14 +67,14 @@ class VirtualTherapist:
         session_retry = 0
         while session_retry < max_session_retries:
             try:
-                print(f"\n=== Virtual Therapist Session ({self.mode.upper()} MODE) ===")
-                print("Share your thoughts and I'll respond. Type 'goodbye' or 'end session' to finish.\n")
+                print("\n=== Virtual Therapist Session (AUDIO MODE) ===")
+                print("Share your thoughts and I'll respond. Say 'goodbye' or 'end session' to finish.\n")
                 async with client.aio.live.connect(model=MODEL, config=self.config) as session:
                     # Send initial greeting with retry
                     await self.send_with_retry(session, "Hello, I'm here as your virtual therapist. How are you feeling?")
                     await self.handle_response(session)
                     while True:
-                        user_input = input("\nYou> ") if self.mode == "text" else await self.get_audio_input()
+                        user_input = await self.get_audio_input()
                         if user_input and any(term in user_input.lower() for term in ["goodbye", "end session", "exit", "quit"]):
                             await self.send_with_retry(session, "The client wants to end our session.")
                             await self.handle_response(session)
@@ -113,7 +103,7 @@ class VirtualTherapist:
         print("\n=== Session Ended ===")
     
     def cleanup_audio_directory(self):
-        """Remove all files in the user audio directory."""
+        """Remove all files in the user and therapist audio directories."""
         print("\nCleaning up audio files...")
         for filename in os.listdir(AUDIO_DIR):
             file_path = os.path.join(AUDIO_DIR, filename)
@@ -126,27 +116,9 @@ class VirtualTherapist:
         print(f"All files removed from {AUDIO_DIR} and {THERAPIST_AUDIO_DIR}.")
     
     async def handle_response(self, session):
-        """Delegate response handling based on mode."""
-        if self.mode == "text":
-            await self.display_text_response(session)
-        else:
-            await self.play_audio_response(session)
+        """Handle the audio response from the model."""
+        await self.play_audio_response(session)
     
-    async def display_text_response(self, session):
-        """Display text response from the model."""
-        print("\nTherapist> ", end="")
-        full_response = ""
-        try:
-            async for response in session.receive():
-                if getattr(response, "text", None):
-                    print(response.text, end="", flush=True)
-                    full_response += response.text
-                if getattr(getattr(response, "server_content", None), "turn_complete", False):
-                    break
-        except Exception as e:
-            print(f"\nError processing response: {e}")
-        return full_response
-            
     async def play_audio_response(self, session):
         """Play and save the audio response from the model."""
         print("\nTherapist> [Speaking...]")
@@ -201,19 +173,13 @@ class VirtualTherapist:
                 while recording_active.is_set():
                     data = stream.read(CHUNK_SIZE, exception_on_overflow=False)
                     frames.append(data)
-                    # Convert data to numpy array for analysis, cast to float32 to avoid overflow issues
                     audio_data = np.frombuffer(data, dtype=np.int16).astype(np.float32)
-                    if audio_data.size > 0:
-                        rms = np.sqrt(np.mean(audio_data**2))
-                    else:
-                        rms = 0
+                    rms = np.sqrt(np.mean(audio_data**2)) if audio_data.size > 0 else 0
 
                     if rms > silence_threshold:
-                        # Speech is detected
                         speech_started = True
                         silent_chunks = 0
                     else:
-                        # If speech has started, count consecutive silent chunks
                         if speech_started:
                             silent_chunks += 1
 
@@ -222,7 +188,6 @@ class VirtualTherapist:
                     sys.stdout.write(f"\rRecording: [{'|' * vol}{' ' * (30 - vol)}]")
                     sys.stdout.flush()
 
-                    # Stop if speech detected and silence continues for set limit
                     if speech_started and silent_chunks >= silence_chunk_limit:
                         recording_active.clear()
                         break
@@ -230,16 +195,13 @@ class VirtualTherapist:
                 stream.stop_stream()
                 stream.close()
 
-        # Start recording in a separate thread
         t = threading.Thread(target=record_audio, daemon=True)
         t.start()
 
-        # Wait until the recording thread finishes
         while t.is_alive():
             await asyncio.sleep(0.1)
         print("\nRecording stopped. Transcribing...")
 
-        # Save recorded frames to a WAV file
         temp_filename = os.path.join(AUDIO_DIR, f"user_input_{int(time.time())}.wav")
         with wave.open(temp_filename, 'wb') as wf:
             wf.setnchannels(CHANNELS)
@@ -247,7 +209,6 @@ class VirtualTherapist:
             wf.setframerate(SEND_SAMPLE_RATE)
             wf.writeframes(b''.join(frames))
         
-        # Transcribe the audio
         text = await self.transcribe_audio(temp_filename)
         print(f"Transcript: {text}")
         return text
@@ -279,7 +240,7 @@ def list_audio_devices():
     print("===============================\n")
 
 def cleanup_audio():
-    """Remove all files in the user audio directory."""
+    """Remove all files in the user and therapist audio directories."""
     print("\nCleaning up audio files...")
     for filename in os.listdir(AUDIO_DIR):
         file_path = os.path.join(AUDIO_DIR, filename)
@@ -293,8 +254,7 @@ def cleanup_audio():
 
 async def main():
     list_audio_devices()
-    mode = 'audio'  # Change to 'text' for text mode
-    therapist = VirtualTherapist(mode=mode)
+    therapist = VirtualTherapist()
     await therapist.start_session()
     cleanup_audio()
 
