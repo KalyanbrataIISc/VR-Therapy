@@ -29,12 +29,15 @@ SEND_SAMPLE_RATE = 16000  # Input must be 16kHz for Gemini
 RECEIVE_SAMPLE_RATE = 24000  # Output is 24kHz from Gemini
 CHUNK_SIZE = 1024
 
-# Audio directory
+# Audio directories
 AUDIO_DIR = "user_audio"
+THERAPIST_AUDIO_DIR = "therapist_audio"
 
-# Create audio directory if it doesn't exist
+# Create audio directories if they don't exist
 if not os.path.exists(AUDIO_DIR):
     os.makedirs(AUDIO_DIR)
+if not os.path.exists(THERAPIST_AUDIO_DIR):
+    os.makedirs(THERAPIST_AUDIO_DIR)
 
 # Initialize PyAudio
 p = pyaudio.PyAudio()
@@ -181,7 +184,7 @@ Your role is to create a safe space where clients can explore their thoughts and
         return full_response
             
     async def play_audio_response(self, session):
-        """Play audio response"""
+        """Play audio response and save output audio to therapist_audio folder"""
         print("\nTherapist> [Speaking...]")
         
         # Set up audio output stream
@@ -192,10 +195,14 @@ Your role is to create a safe space where clients can explore their thoughts and
             output=True
         )
         
+        # List to accumulate audio data chunks
+        audio_chunks = []
+        
         try:
             async for response in session.receive():
                 # Process audio data
                 if hasattr(response, 'data') and response.data is not None:
+                    audio_chunks.append(response.data)
                     try:
                         output_stream.write(response.data)
                     except Exception as e:
@@ -210,6 +217,20 @@ Your role is to create a safe space where clients can explore their thoughts and
         finally:
             output_stream.close()
             print("[Done speaking]")
+        
+        # Save the accumulated audio data to a WAV file in therapist_audio directory
+        if audio_chunks:
+            timestamp = int(time.time())
+            file_path = os.path.join(THERAPIST_AUDIO_DIR, f"therapist_output_{timestamp}.wav")
+            try:
+                with wave.open(file_path, 'wb') as wf:
+                    wf.setnchannels(CHANNELS)
+                    wf.setsampwidth(p.get_sample_size(FORMAT))
+                    wf.setframerate(RECEIVE_SAMPLE_RATE)
+                    wf.writeframes(b''.join(audio_chunks))
+                print(f"Therapist audio saved to {file_path}")
+            except Exception as e:
+                print(f"Error saving therapist audio: {e}")
     
     async def get_audio_input(self):
         """Record audio input and automatically transcribe it"""
